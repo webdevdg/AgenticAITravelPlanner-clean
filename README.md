@@ -7,17 +7,17 @@ Leverages LangGraph, ReAct agents, RAG over local travel guides, and OpenAI’s 
 
 ## 🛠️ Features
 
-- **Natural‑Language Chat**  
+- **Natural‑Language Chat**
   Ask for a trip (“Plan a 3‑day Paris getaway”) and get an itinerary.
 
 - **ReAct‑Style Search Agents**  
-  Calls stubbed (or real) flight & hotel APIs in a think→act→observe loop.
+  Calls real flight & hotel APIs in a think→act→observe loop.
 
 - **RAG over Local Guides**  
-  Index your own Markdown travel tips (hidden gems, dining, sights) via FAISS + OpenAI embeddings.
+  Index our own Markdown travel tips (hidden gems, dining, sights) via FAISS + OpenAI embeddings.
 
 - **Memory of Preferences**  
-  Remembers your favorite airlines, hotel class, budget limits for follow‑up queries.
+  Remembers favorite airlines, hotel class, budget limits for follow‑up queries.
 
 - **Supervisor Checks**  
   Validates final plan against budget and timing constraints.
