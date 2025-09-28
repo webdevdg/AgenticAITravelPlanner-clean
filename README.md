@@ -17,7 +17,7 @@ Leverages LangGraph, ReAct agents, RAG over local travel guides, and OpenAI’s 
   Index our own Markdown travel tips (hidden gems, dining, sights) via FAISS + OpenAI embeddings.
 
 - **Memory of Preferences**  
-  Remembers favorite airlines, hotel class, budget limits for follow‑up queries.
+  Remembers user preferences like favorite airlines, hotel class, budget limits for follow‑up queries.
 
 - **Supervisor Checks**  
   Validates final plan against budget and timing constraints.

@@ -1,6 +1,7 @@
 import os
 import requests
 from typing import List, Dict, Any
+from datetime import date, datetime, timedelta
 
 try:
     from dotenv import load_dotenv
@@ -31,6 +32,32 @@ def get_hotel_ids(city_code: str, access_token: str) -> list:
     data = response.json()
     return [hotel["hotelId"] for hotel in data.get("data", [])]
 
+def _ensure_future_dates(checkin: str, checkout: str) -> tuple[str, str]:
+    """
+    Normalize dates to satisfy Amadeus requirements:
+    - parse ISO strings; if invalid, pick defaults
+    - ensure check-in is after today
+    - ensure check-out is after check-in
+    Returns ISO-formatted YYYY-MM-DD strings.
+    """
+    today = date.today()
+    # Parse or default
+    try:
+        ci = datetime.fromisoformat(checkin).date()
+    except Exception:
+        ci = today + timedelta(days=7)
+    try:
+        co = datetime.fromisoformat(checkout).date()
+    except Exception:
+        co = ci + timedelta(days=2)
+    # Enforce future and correct ordering
+    if ci <= today:
+        ci = today + timedelta(days=7)
+    if co <= ci:
+        co = ci + timedelta(days=2)
+    return ci.isoformat(), co.isoformat()
+
+
 def search_hotels(city: str, checkin: str, checkout: str) -> List[Dict[str, Any]]:
     """
     Search for hotels in a city using the Amadeus Hotel Search API.
@@ -41,6 +68,8 @@ def search_hotels(city: str, checkin: str, checkout: str) -> List[Dict[str, Any]
     Returns:
         List[Dict[str, Any]]: List of hotel options.
     """
+    # Normalize dates to avoid Amadeus INVALID DATE errors
+    checkin, checkout = _ensure_future_dates(checkin, checkout)
     access_token = get_amadeus_access_token()
     hotel_ids = get_hotel_ids(city, access_token)
     if not hotel_ids:

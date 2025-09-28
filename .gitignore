@@ -1,13 +1,16 @@
-# ignore environment file
-echo ".env" >> .gitignore
+# Python
+__pycache__/
+*.pyc
 
-# ignore virtual‑env folder
-echo ".venv/" >> .gitignore
-
-# optional extras
-#echo "__pycache__/" >> .gitignore
-#echo "*.py[cod]" >> .gitignore
-#echo "data/guide_index/" >> .gitignore  # if i want to rebuild rather than commit your FAISS index
-.env
-.env
+# Environments
+venv/
 .venv/
+.env
+
+# macOS
+.DS_Store
+
+# Optional: ignore generated FAISS index (uncomment if desired)
+# data/guide_index/
+
+.langgraph_api/

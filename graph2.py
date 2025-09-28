@@ -8,7 +8,7 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
 from langchain_openai import ChatOpenAI
 from langgraph.prebuilt import create_react_agent
-from langgraph.checkpoint.memory import MemorySaver
+# from langgraph.checkpoint.memory import MemorySaver
 from store.redis_store import RedisStore
 from tools.flight_api import search_flights
 from tools.hotel_api import search_hotels
@@ -32,7 +32,7 @@ tools=[search_flights, search_hotels, retrieve_tips] #Integrating RAG Tool
 agent = create_react_agent(llm, tools)
 
 # memory_cp = MemorySaver(namespace="travel")    # session replay
-memory_cp = MemorySaver()
+# memory_cp = MemorySaver()
 store = RedisStore.from_url(os.environ["REDIS_URL"], namespace="prefs")
 
 # Build the graph
@@ -58,7 +58,8 @@ builder.add_edge("load_prefs", "react_agent")
 builder.add_edge("react_agent","save_prefs")
 builder.add_edge("save_prefs", END)
 
-graph = builder.compile(checkpointer=memory_cp)
+graph = builder.compile()
+# graph = builder.compile(checkpointer=memory_cp)
 
 view_graph = graph
 
@@ -99,8 +100,9 @@ if __name__ == "__main__":
     turn2 = graph.invoke(
                 {
                 "messages": [
-                    {"role": "user", "content": "Find me hotels in NYC for checkin on 2025-08-10 and checkout on 2025-08-12"}
+                    {"role": "user", "content": "Find me hotels in NYC for checkin on 2025-10-10 and checkout on 2025-10-12"}
                 ],
+                "thread_id": thread_id
         },
         config={"configurable": {"thread_id": thread_id}}
     )
