@@ -20,7 +20,9 @@ _store = FAISS.load_local("data/guide_index", OpenAIEmbeddings(), allow_dangerou
 # Retriever Tool
 def retrieve_tips(query: str, k: int = 5) -> List[str]:
     """
-    Returns the top-k matching guide passages for the given query.
+    Search the LOCAL travel guides (not the web). Return short passages with insider tips.
+    Always pass the city name if the user asks about a specific city (e.g., Paris, Kyoto).
+    Use this for hidden gems, dining, neighborhoods, and day-by-day planning.
     """
 
     # similarity_search takes a query string, Converts it into a vector using the embedding model
@@ -28,6 +30,7 @@ def retrieve_tips(query: str, k: int = 5) -> List[str]:
     # Returns the top-k matching documents. ( k is the number of most relevant documents to return.)
 
     docs = _store.similarity_search(query, k=k)  # FAISS index searches through the stored vector embeddings and returns the top k most similar documents (or chunk)
+    print(f"[RAG] retrieve_tips: {query} (k={k}) -> {len(docs)} hits")
     return [d.page_content for d in docs]
 
 
