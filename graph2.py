@@ -11,6 +11,7 @@ from langchain_openai import ChatOpenAI
 from langgraph.prebuilt import create_react_agent
 # from langgraph.checkpoint.memory import MemorySaver
 from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.callbacks import BaseCallbackHandler  # minimal token printer for streaming
 from store.redis_store import RedisStore
 from tools.flight_api import search_flights
 from tools.hotel_api import search_hotels
@@ -21,12 +22,18 @@ os.environ["LANGSMITH_API_KEY"]=os.getenv("LANGCHAIN_API_KEY")
 os.environ["LANGSMITH_TRACING"]="true"
 os.environ["LANGSMITH_PROJECT"] = "AgenticTravelPlanner"
 
+class PrintTokens(BaseCallbackHandler):
+    def on_llm_new_token(self, token: str, **kwargs):
+        print(token, end="", flush=True)
+
 class State(TypedDict):
     messages: Annotated[list[dict], add_messages]
     preferences: dict   # to have a key value store
     thread_id: str      # to keep thread_id in state
 
-llm = ChatOpenAI(model="gpt-3.5-turbo")
+# llm = ChatOpenAI(model="gpt-3.5-turbo")
+llm = ChatOpenAI(model="gpt-3.5-turbo", temperature=0, streaming=True)
+
 
 # tools=[search_flights, search_hotels]
 tools=[search_flights, search_hotels, retrieve_tips] #Integrating RAG Tool
@@ -50,7 +57,7 @@ def save_prefs_node(s):
     for k, v in s["preferences"].items():
         store.put(s["thread_id"], k, v)
     return s
-    
+
 
 # Compile once at module import
 STAR_RE = re.compile(r"\b(\d+)\s*-\s*star\b|\b(\d+)\s*star\b", re.IGNORECASE)
@@ -191,10 +198,98 @@ graph = builder.compile()
 view_graph = graph
 
 
+# Node-by-node updates including tool invocations, system injections, and intent decisions
+def run_with_event_stream(payload, thread_id="user123"):
+    print("\n\n===== STREAM (updates) =====")
+    for update in graph.stream(
+        payload,
+        config={"configurable": {"thread_id": thread_id}, "callbacks": [PrintTokens()]},  # Adding callback for token stream (Live LLM tokens as they’re generated)
+        stream_mode="updates",
+    ):
+        if not update:
+            continue
+
+        for node_name, payload in update.items():
+            print(f"\n[stream] node={node_name}")
+
+            # Some nodes yield None or non-dict payloads — guard it.
+            if payload is None:
+                print("  (no state changes)")
+                continue
+
+            # Normalize: updates can be a single dict-like, or a list of dict-likes
+            items = payload if isinstance(payload, list) else [payload]
+
+            printed_any = False
+            for i, item in enumerate(items):
+                # Try to read messages from dicts or objects
+                messages = []
+                if isinstance(item, dict):
+                    messages = item.get("messages") or []
+                else:
+                    messages = getattr(item, "messages", None) or []
+
+                if messages:
+                    printed_any = True
+                    last = messages[-1]
+                    # Support LC message objects and dict-style messages
+                    if hasattr(last, "content"):
+                        content = last.content or ""
+                        role = getattr(last, "type", "assistant")
+                    elif isinstance(last, dict):
+                        content = last.get("content", "") or ""
+                        role = last.get("role", "assistant")
+                    else:
+                        content, role = "", "assistant"
+
+                    preview = content[:300] + ("..." if len(content) > 300 else "")
+                    print(f"  [{i}] {role}: {preview}")
+
+                # Also surface small scalar fields if present (e.g., intent flags / prefs)
+                if isinstance(item, dict):
+                    for k in ("wants_tool", "preferences"):
+                        if k in item:
+                            printed_any = True
+                            print(f"  {k}: {item[k]}")
+
+            if not printed_any:
+                print("  (no messages or tracked fields in this update)")
+
+
+
+# if __name__ == "__main__":
+#     thread_id = "user123"   # to identify this session
+
+#     single = {
+#         "messages": [{
+#             "role": "user",
+#             "content": (
+#                 "My preferences: I prefer 4-star hotels and a $2000 total budget for the hotel stay. "
+#                 "Please do three things:\n"
+#                 "1) Find 4-star hotels in NYC (city code NYC) for check-in 2025-10-10 and check-out 2025-10-12, "
+#                 "keeping the total under $2000.\n"
+#                 "2) Find nonstop ECONOMY flights from New Delhi (DEL) to Mumbai (BOM) on 2025-10-25 under $150.\n"
+#                 "3) Using the local guides, find 3 hidden gems in Paris and explain why each is special.\n"
+#                 "Respond in three sections: Hotels, Flights, Hidden Gems."
+#             )
+#         }],
+#         "thread_id": thread_id
+#     }
+
+#     out = graph.invoke(
+#         single, 
+#         config={
+#             "configurable": {"thread_id": thread_id}},
+#             callbacks=[PrintTokens()]
+#     )
+#     # print(out["messages"][-1].content)
+#     print("\n\n--- FINAL MESSAGE ---\n", out["messages"][-1].content)
+
+
+
 if __name__ == "__main__":
     thread_id = "user123"   # to identify this session
-
-    single = {
+    prompt = {
         "messages": [{
             "role": "user",
             "content": (
@@ -210,5 +305,5 @@ if __name__ == "__main__":
         "thread_id": thread_id
     }
 
-    out = graph.invoke(single, config={"configurable": {"thread_id": thread_id}})
-    print(out["messages"][-1].content)
+    print("\n\n>>> EVENT STREAM (nodes/tools) <<<\n")
+    run_with_event_stream(prompt, thread_id=thread_id)
