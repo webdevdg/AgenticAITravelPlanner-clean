@@ -2,6 +2,7 @@
 
 import os
 import re
+import json
 from dotenv import load_dotenv
 from typing import Annotated
 from typing_extensions import TypedDict
@@ -31,11 +32,9 @@ class State(TypedDict):
     preferences: dict   # to have a key value store
     thread_id: str      # to keep thread_id in state
 
-# llm = ChatOpenAI(model="gpt-3.5-turbo")
 llm = ChatOpenAI(model="gpt-3.5-turbo", temperature=0, streaming=True)
+extract_llm = ChatOpenAI(model="gpt-3.5-turbo", temperature=0, streaming=False)
 
-
-# tools=[search_flights, search_hotels]
 tools=[search_flights, search_hotels, retrieve_tips] #Integrating RAG Tool
 
 agent = create_react_agent(llm, tools)
@@ -56,7 +55,9 @@ def save_prefs_node(s):
     print("[save_prefs] writing:", s.get("preferences"))
     for k, v in s["preferences"].items():
         store.put(s["thread_id"], k, v)
-    return s
+
+    # Returning only prefs so the graph doesn't re-emit the last assistant message
+    return {"preferences": s.get("preferences", {})}
 
 
 # Compile once at module import
@@ -167,6 +168,107 @@ def detect_intent_node(s):
     return {"wants_tool": wants_tool}
 
 
+def human_review_node(s):
+    """Minimal HITL gate:
+    - Return {"approved": True} to ship the answer
+    - Or return {"approved": False, "messages":[HumanMessage(...)]} to revise
+    """
+    # Last assistant message
+    last = s["messages"][-1] if s.get("messages") else None
+    text = (
+        getattr(last, "content", None)
+        or (last.get("content", "") if isinstance(last, dict) else "")
+        or ""
+    )
+
+    mode = os.getenv("HITL_MODE", "auto").lower()  # "auto" or "ask"
+    if mode != "ask":
+        return {"approved": True}
+
+    print("\n\n--- REVIEW (HITL) ---\n")
+    print(text)
+    print("\nApprove to send? [y] yes / [e] edit & retry / anything else = reject")
+    try:
+        ans = input("> ").strip().lower()
+    except EOFError:
+        ans = "y"  # non-interactive fallback
+
+    if ans == "y":
+        return {"approved": True}
+
+    if ans == "e":
+        note = input("Reviewer feedback (will be added as a HumanMessage): ").strip()
+        return {
+            "approved": False,
+            "messages": [HumanMessage(content=f"Reviewer feedback: {note}")]
+        }
+
+    # plain reject -> loop back to agent without extra guidance
+    return {"approved": False}
+
+
+# --- Structured data review gate ---
+
+def structured_review_node(s):
+    """
+    If HITL_STRUCT=ask:
+      - Extract compact JSON {hotels, flights, tips} from the last assistant draft.
+      - Ask for approval on the DATA only.
+    Else:
+      - Auto-approve.
+    Returns only small flags/optional feedback. Does NOT emit messages to avoid duplicates.
+    """
+    if os.getenv("HITL_STRUCT", "off").lower() != "ask":
+        return {"approved_struct": True}
+
+    msgs = s.get("messages", [])
+    last = msgs[-1] if msgs else None
+    draft = (
+        getattr(last, "content", None)
+        or (last.get("content", "") if isinstance(last, dict) else "")
+        or ""
+    )
+
+    # Use your llm to extract compact JSON; you can swap to a cheaper model if you like.
+    system = SystemMessage(content=(
+        "Extract a compact JSON object from the draft with keys hotels, flights, tips.\n"
+        "Schema:\n"
+        "{\n"
+        "  hotels: [{name, price?, currency?, address?, description?}],\n"
+        "  flights: [{airline?, price?, currency?, departure?, arrival?, nonstop?}],\n"
+        "  tips: [{title, why}]\n"
+        "}\n"
+        "Return ONLY valid JSON. No extra text."
+    ))
+
+    resp = extract_llm.invoke([system, HumanMessage(content=draft)])
+    raw = (resp.content or "").strip()
+
+    try:
+        data = json.loads(raw)
+    except Exception:
+        print("\n--- STRUCTURED REVIEW (raw not valid JSON) ---\n")
+        # print(raw)
+        ok = input("Ship anyway? [y]/[n]: ").strip().lower() == "y"
+        return {"approved_struct": ok}
+
+    print("\n--- STRUCTURED REVIEW ---\n")
+    print(json.dumps(data, indent=2))
+    ans = input("Approve structured data? [y] / [e]dit & retry / [n]: ").strip().lower()
+
+    if ans == "y":
+            print("✓ Structured data approved.")
+            return {"approved_struct": True}
+
+    if ans == "e":
+        note = input("Reviewer feedback on data: ").strip()
+        # Feed reviewer guidance back into the conversation and loop to react_agent
+        return {"approved_struct": False,
+                "messages": [HumanMessage(content=f"Reviewer feedback on data: {note}")]}
+
+    return {"approved_struct": False}
+
+
 
 # --- nodes ---
 builder.add_node("load_prefs",   load_prefs_node)
@@ -174,12 +276,13 @@ builder.add_node("parse_prefs",  parse_prefs_node)
 builder.add_node("inject_prefs", inject_prefs_node)
 builder.add_node("detect_intent", detect_intent_node)
 builder.add_node("react_agent",  agent)
+builder.add_node("structured_review", structured_review_node)
 builder.add_node("save_prefs",   save_prefs_node)
 
 # --- edges ---
 builder.add_edge(START,          "load_prefs")
-builder.add_edge("load_prefs",   "parse_prefs")      # parse incoming prefs first
-builder.add_edge("parse_prefs",  "inject_prefs")     # then inject them
+builder.add_edge("load_prefs",   "parse_prefs")    # to parse incoming prefs first
+builder.add_edge("parse_prefs",  "inject_prefs")   # then inject them
 builder.add_edge("inject_prefs", "detect_intent")
 
 builder.add_conditional_edges(
@@ -188,7 +291,17 @@ builder.add_conditional_edges(
     {"react_agent": "react_agent", "parse_prefs": "parse_prefs"},
 )
 
-builder.add_edge("react_agent",  "save_prefs")
+# builder.add_edge("react_agent",  "save_prefs")
+
+# to route through HITL
+builder.add_edge("react_agent", "structured_review")  # Adding as a human structure review at the end of the flow
+
+builder.add_conditional_edges(
+    "structured_review",
+    lambda s: "ok" if s.get("approved_struct") else "revise",
+    {"ok": "save_prefs", "revise": "react_agent"},
+)
+
 builder.add_edge("save_prefs",   END)
 
 
